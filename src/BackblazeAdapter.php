@@ -14,12 +14,7 @@ use League\Flysystem\Config;
 use League\Flysystem\FileAttributes;
 use League\Flysystem\FilesystemAdapter;
 use League\Flysystem\FilesystemException;
-use League\Flysystem\InvalidVisibilityProvided;
 use League\Flysystem\UnableToCheckExistence;
-use League\Flysystem\UnableToCreateDirectory;
-use League\Flysystem\UnableToDeleteDirectory;
-use League\Flysystem\UnableToMoveFile;
-use League\Flysystem\UnableToRetrieveMetadata;
 use LogicException;
 
 class BackblazeAdapter implements FilesystemAdapter
@@ -28,18 +23,15 @@ class BackblazeAdapter implements FilesystemAdapter
         protected Client $client,
         protected string $bucketName,
         protected mixed  $bucketId = null
-    )
-    {
-    }
+    ) {}
 
     public function fileExists(string $path): bool
     {
-        return $this->getClient()
-            ->fileExists([
-                'FileName' => $path,
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-            ]);
+        return $this->getClient()->fileExists([
+            'FileName' => $path,
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+        ]);
     }
 
     /**
@@ -48,28 +40,54 @@ class BackblazeAdapter implements FilesystemAdapter
      */
     public function write(string $path, string $contents, Config $config): void
     {
-        $file = $this->getClient()
-            ->upload([
+        if ($this->isLargeFile(filesize($contents))) {
+            $this->uploadLargeFile($path, $contents, $config);
+        } else {
+            $this->getClient()->upload([
                 'BucketId' => $this->bucketId,
                 'BucketName' => $this->bucketName,
                 'FileName' => $path,
                 'Body' => $contents,
             ]);
+        }
     }
 
     /**
+     * @param resource $contents
+     *
      * @throws GuzzleException
      * @throws B2Exception
      */
-    public function writeStream(string $path, mixed $resource, Config $config): void
+    public function writeStream(string $path, $contents, Config $config): void
     {
-        $this->getClient()
-            ->upload([
+        $streamMetaData = stream_get_meta_data($contents);
+
+        if ($this->isLargeFile(filesize($streamMetaData['uri']))) {
+            $this->uploadLargeFile($path, $streamMetaData['uri']);
+        } else {
+            $this->getClient()->upload([
                 'BucketId' => $this->bucketId,
                 'BucketName' => $this->bucketName,
                 'FileName' => $path,
-                'Body' => $resource,
+                'Body' => $contents,
             ]);
+        }
+    }
+
+    /**
+     * @param string $fileName
+     * @param string $path
+     *
+     * @return void
+     */
+    public function uploadLargeFile(string $fileName, string $path): void
+    {
+        $this->getClient()->uploadLargeFile([
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+            'FileName' => $fileName,
+            'FilePath' => str_replace($fileName, '', $path),
+        ]);
     }
 
     /**
@@ -78,13 +96,12 @@ class BackblazeAdapter implements FilesystemAdapter
      */
     public function update(string $path, string $contents, Config $config): array
     {
-        $file = $this->getClient()
-            ->upload([
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-                'FileName' => $path,
-                'Body' => $contents,
-            ]);
+        $file = $this->getClient()->upload([
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+            'FileName' => $path,
+            'Body' => $contents,
+        ]);
 
         return $this->getFileInfo($file);
     }
@@ -95,45 +112,44 @@ class BackblazeAdapter implements FilesystemAdapter
      */
     public function updateStream(string $path, mixed $resource, Config $config): array
     {
-        $file = $this->getClient()
-            ->upload([
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-                'FileName' => $path,
-                'Body' => $resource,
-            ]);
+        $file = $this->getClient()->upload([
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+            'FileName' => $path,
+            'Body' => $resource,
+        ]);
 
         return $this->getFileInfo($file);
     }
 
     /**
-     * @throws GuzzleException
      * @throws B2Exception
+     * @throws GuzzleException
      * @throws NotFoundException
      */
     public function read(string $path): string
     {
         $file = $this->getFile($path);
 
-        $fileContent = $this->getClient()
-            ->download([
-                'FileId' => $file->getId(),
-            ]);
-
-        /** @var string $fileContent */
-        return $fileContent;
+        /** @var string */
+        return $this->getClient()->download([
+            'FileId' => $file->getId(),
+        ]);
     }
 
-    public function readStream(string $path): mixed
+    /**
+     * @param string $path
+     * @return array<string,resource>|bool
+     */
+    public function readStream(string $path): array|bool
     {
         $stream = Psr7\Utils::streamFor();
-        $download = $this->getClient()
-            ->download([
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-                'FileName' => $path,
-                'SaveAs' => $stream,
-            ]);
+        $download = $this->getClient()->download([
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+            'FileName' => $path,
+            'SaveAs' => $stream,
+        ]);
         $stream->seek(0);
 
         try {
@@ -215,12 +231,11 @@ class BackblazeAdapter implements FilesystemAdapter
      */
     public function deleteDirectory(string $path): void
     {
-        $this->getClient()
-            ->deleteFile([
-                'FileName' => $path,
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-            ]);
+        $this->getClient()->deleteFile([
+            'FileName' => $path,
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+        ]);
     }
 
     /**
@@ -242,13 +257,12 @@ class BackblazeAdapter implements FilesystemAdapter
      */
     public function createDirectory(string $directoryName, Config $config): void
     {
-        $this->getClient()
-            ->upload([
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-                'FileName' => $directoryName,
-                'Body' => '',
-            ]);
+        $this->getClient()->upload([
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+            'FileName' => $directoryName,
+            'Body' => '',
+        ]);
     }
 
     /**
@@ -267,7 +281,7 @@ class BackblazeAdapter implements FilesystemAdapter
 
     /**
      * @param string $path
-     * @return bool
+     * @return string
      *
      * @throws B2Exception
      * @throws GuzzleException
@@ -296,12 +310,11 @@ class BackblazeAdapter implements FilesystemAdapter
      */
     public function getTimestamp($path): array
     {
-        $file = $this->getClient()
-            ->getFile([
-                'FileName' => $path,
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-            ]);
+        $file = $this->getClient()->getFile([
+            'FileName' => $path,
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+        ]);
 
         return $this->getFileInfo($file);
     }
@@ -312,26 +325,25 @@ class BackblazeAdapter implements FilesystemAdapter
      * @throws GuzzleException
      * @throws B2Exception
      */
-    public function listContents(string $directory = '', bool $recursive = false): array
+    public function listContents(string $path = '', bool $deep = false): array
     {
-        $fileObjects = $this->getClient()
-            ->listFiles([
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-            ]);
+        $fileObjects = $this->getClient()->listFiles([
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+        ]);
 
-        if ($recursive === true && $directory === '') {
+        if ($deep === true && $path === '') {
             $regex = '/^.*$/';
-        } elseif ($recursive === true && $directory !== '') {
-            $regex = '/^' . preg_quote($directory) . '\/.*$/';
-        } elseif ($recursive === false && $directory === '') {
+        } elseif ($deep === true && $path !== '') {
+            $regex = '/^' . preg_quote($path, null) . '\/.*$/';
+        } elseif ($deep === false && $path === '') {
             $regex = '/^(?!.*\\/).*$/';
-        } elseif ($recursive === false && $directory !== '') {
-            $regex = '/^' . preg_quote($directory) . '\/(?!.*\\/).*$/';
+        } elseif ($deep === false && $path !== '') {
+            $regex = '/^' . preg_quote($path, null) . '\/(?!.*\\/).*$/';
         } else {
             throw new InvalidArgumentException();
         }
-        $fileObjects = array_filter($fileObjects, function ($fileObject) use ($regex) {
+        $fileObjects = array_filter($fileObjects, static function ($fileObject) use ($regex) {
             return 1 === preg_match($regex, $fileObject->getName());
         });
 
@@ -420,12 +432,11 @@ class BackblazeAdapter implements FilesystemAdapter
      */
     protected function getFile(string $path): File
     {
-        return $this->getClient()
-            ->getFile([
-                'FileName' => $path,
-                'BucketId' => $this->bucketId,
-                'BucketName' => $this->bucketName,
-            ]);
+        return $this->getClient()->getFile([
+            'FileName' => $path,
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+        ]);
     }
 
     /**
@@ -469,5 +480,22 @@ class BackblazeAdapter implements FilesystemAdapter
             mimeType: $file->getType(),
             extraMetadata: []
         );
+    }
+
+    /**
+     * Checks the size for the B2 5 Gb size limit
+     * @param float $sizeInBytes
+     * @return bool
+     */
+    protected function isLargeFile(float $sizeInBytes): bool
+    {
+        if ($sizeInBytes === 0.0) {
+            return false;
+        }
+        for ($i = 0; $sizeInBytes > 1024; $i++) {
+            $sizeInBytes /= 1024;
+        }
+
+        return $i >= 3 && $sizeInBytes >= 5;
     }
 }
