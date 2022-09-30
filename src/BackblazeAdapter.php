@@ -39,32 +39,58 @@ class BackblazeAdapter extends AbstractAdapter
      */
     public function write($path, $contents, Config $config)
     {
-        $file = $this->getClient()
-            ->upload([
-                'BucketId'   => $this->bucketId,
+        if ($this->isLargeFile(filesize($contents))) {
+            $this->uploadLargeFile($path, $contents, $config);
+        } else {
+            $file = $this->getClient()->upload([
+                'BucketId' => $this->bucketId,
                 'BucketName' => $this->bucketName,
-                'FileName'   => $path,
-                'Body'       => $contents,
+                'FileName' => $path,
+                'Body' => $contents,
             ]);
 
-        return $this->getFileInfo($file);
+            return $this->getFileInfo($file);
+        }
     }
 
     /**
+     * @param resource $contents
+     *
      * @throws GuzzleException
      * @throws B2Exception
      */
-    public function writeStream($path, $resource, Config $config)
+    public function writeStream($path, $contents, Config $config)
     {
-        $file = $this->getClient()
-            ->upload([
-                'BucketId'   => $this->bucketId,
+        $streamMetaData = stream_get_meta_data($contents);
+
+        if ($this->isLargeFile(filesize($streamMetaData['uri']))) {
+            $this->uploadLargeFile($path, $streamMetaData['uri']);
+        } else {
+            $file = $this->getClient()->upload([
+                'BucketId' => $this->bucketId,
                 'BucketName' => $this->bucketName,
-                'FileName'   => $path,
-                'Body'       => $resource,
+                'FileName' => $path,
+                'Body' => $contents,
             ]);
 
-        return $this->getFileInfo($file);
+            return $this->getFileInfo($file);
+        }
+    }
+
+    /**
+     * @param string $fileName
+     * @param string $path
+     *
+     * @return void
+     */
+    public function uploadLargeFile(string $fileName, string $path): void
+    {
+        $this->getClient()->uploadLargeFile([
+            'BucketId' => $this->bucketId,
+            'BucketName' => $this->bucketName,
+            'FileName' => $fileName,
+            'FilePath' => str_replace($fileName, '', $path),
+        ]);
     }
 
     /**
@@ -298,5 +324,22 @@ class BackblazeAdapter extends AbstractAdapter
             'timestamp' => substr((string) $file->getUploadTimestamp() ?? '', 0, -3),
             'size'      => $file->getSize(),
         ];
+    }
+
+    /**
+     * Checks the size for the B2 5 Gb size limit
+     * @param float $sizeInBytes
+     * @return bool
+     */
+    protected function isLargeFile(float $sizeInBytes): bool
+    {
+        if ($sizeInBytes === 0.0) {
+            return false;
+        }
+        for ($i = 0; $sizeInBytes > 1024; $i++) {
+            $sizeInBytes /= 1024;
+        }
+
+        return $i >= 3 && $sizeInBytes >= 5;
     }
 }
