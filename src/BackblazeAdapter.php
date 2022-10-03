@@ -64,7 +64,7 @@ class BackblazeAdapter extends AbstractAdapter
         $streamMetaData = stream_get_meta_data($contents);
 
         if ($this->isLargeFile(filesize($streamMetaData['uri']))) {
-            $this->uploadLargeFile($path, $streamMetaData['uri']);
+            $this->uploadLargeFile($path, str_replace($path, '', $streamMetaData['uri']));
         } else {
             $file = $this->getClient()->upload([
                 'BucketId' => $this->bucketId,
